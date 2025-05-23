@@ -1,12 +1,20 @@
 name: build
-on: [push, pull_request]
+
+on:
+  # 只有 push tag（v开头）时、PR，以及手动触发时启动
+  push:
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]  # 三个平台
         build_type: [RelWithDebInfo, Debug]
         ui: [gui, cli]
         scripting: [lua, noscripts]
@@ -18,10 +26,10 @@ jobs:
           - build_type: RelWithDebInfo
             scripting: noscripts
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4   # 检出源码
       with:
-        submodules: 'recursive'
-    - name: Install Dependencies
+        submodules: 'recursive'   # 同时检出子模块
+    - name: Install Dependencies   # 安装依赖（仅 Linux）
       if: runner.os == 'Linux'
       shell: bash
       run: |
@@ -29,7 +37,7 @@ jobs:
         sudo apt-get install -y \
           libpixman-1-dev libfreetype6-dev libharfbuzz-dev zlib1g-dev \
           libx11-dev libxcursor-dev libxi-dev libgl1-mesa-dev libfontconfig1-dev
-    - name: Install Skia
+    - name: Install Skia          # 安装 Skia 图形库（仅 GUI 模式）
       if: ${{ matrix.ui == 'gui' }}
       shell: bash
       run: |
@@ -42,15 +50,15 @@ jobs:
         skia_file=$(basename $skia_url)
         curl --ssl-revoke-best-effort -L -o "$skia_file" "$skia_url"
         unzip "$skia_file" -d skia
-    - name: ccache
+    - name: ccache                # 使用 ccache 加速编译（仅 Linux 和 macOS）
       uses: hendrikmuhs/ccache-action@v1.2.17
       if: ${{ runner.os == 'Linux' || runner.os == 'macOS' }}
       with:
         key: ${{ matrix.os }}-${{ matrix.ui }}-${{ matrix.scripting }}-${{ matrix.build_type }}
-    - uses: aseprite/get-ninja@main
-    - uses: ilammy/msvc-dev-cmd@v1
+    - uses: aseprite/get-ninja@main  # 安装 Ninja 构建工具
+    - uses: ilammy/msvc-dev-cmd@v1   # 配置 MSVC（仅 Windows）
       if: runner.os == 'Windows'
-    - name: Generating Makefiles
+    - name: Generating Makefiles  # 生成 Makefile（跨平台构建配置）
       shell: bash
       run: |
         if [[ "${{ runner.os }}" == "Windows" ]] ; then
@@ -86,18 +94,18 @@ jobs:
           -DLAF_BACKEND=$laf_backend \
           -DSKIA_DIR=$(realpath skia) \
           -DSKIA_LIBRARY_DIR=$(realpath skia/out/Release-$skia_arch)
-    - name: Compiling
+    - name: Compiling             # 编译
       shell: bash
       run: |
         cd build && ninja
-    - name: Running C++ Tests
+    - name: Running C++ Tests     # 运行 C++ 测试
       shell: bash
       run: |
         if [[ "${{ runner.os }}" == "Linux" ]] ; then
           export XVFB=xvfb-run
         fi
         cd build && $XVFB ctest --output-on-failure
-    - name: Running CLI Tests
+    - name: Running CLI Tests     # 运行 CLI 测试（仅 scripting=lua 时）
       if: ${{ matrix.scripting == 'lua' }}
       shell: bash
       run: |
@@ -107,3 +115,22 @@ jobs:
         export ASEPRITE=$PWD/build/bin/aseprite
         cd tests
         $XVFB bash run-tests.sh
+
+    # ==== 以下为自动打包和上传 Release（只在特定构建参数下执行）====
+    - name: 打包为 zip
+      # 仅在 ubuntu/RelWithDebInfo/gui/lua 这组参数下打包
+      if: matrix.os == 'ubuntu-latest' && matrix.build_type == 'RelWithDebInfo' && matrix.ui == 'gui' && matrix.scripting == 'lua'
+      run: |
+        cd build/bin
+        zip -r ../../aseprite.zip ./*
+        cd ../..
+
+    - name: 发布为草稿 Release
+      # 仅在 ubuntu/RelWithDebInfo/gui/lua 这组参数下上传
+      if: matrix.os == 'ubuntu-latest' && matrix.build_type == 'RelWithDebInfo' && matrix.ui == 'gui' && matrix.scripting == 'lua'
+      uses: softprops/action-gh-release@v2
+      with:
+        draft: true       # 草稿，仅对有权限用户可见
+        files: aseprite.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
